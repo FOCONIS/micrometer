@@ -42,6 +42,8 @@ public class TomcatMetricsBinder implements ApplicationListener<ApplicationReady
     private final MeterRegistry meterRegistry;
 
     private final Iterable<Tag> tags;
+    
+    private TomcatMetrics metrics;
 
     public TomcatMetricsBinder(MeterRegistry meterRegistry) {
         this(meterRegistry, Collections.emptyList());
@@ -56,7 +58,12 @@ public class TomcatMetricsBinder implements ApplicationListener<ApplicationReady
     public void onApplicationEvent(ApplicationReadyEvent event) {
         ApplicationContext applicationContext = event.getApplicationContext();
         Manager manager = findManager(applicationContext);
-        new TomcatMetrics(manager, this.tags).bindTo(this.meterRegistry);
+        metrics = new TomcatMetrics(manager, this.tags);
+        metrics.bindTo(this.meterRegistry);
+    }
+    
+    public void shutdown() {
+        metrics.destroy();
     }
 
     private Manager findManager(ApplicationContext applicationContext) {

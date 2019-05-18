@@ -25,6 +25,7 @@ import org.apache.catalina.Manager;
 import javax.management.*;
 import java.lang.management.ManagementFactory;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -53,6 +54,8 @@ public class TomcatMetrics implements MeterBinder {
 
     private final MBeanServer mBeanServer;
     private final Iterable<Tag> tags;
+    
+    private final Set<NotificationListener> registeredListeners = new HashSet<>();
 
     private String jmxDomain;
 
@@ -89,6 +92,20 @@ public class TomcatMetrics implements MeterBinder {
         registerCacheMetrics(registry);
         registerThreadPoolMetrics(registry);
         registerSessionMetrics(registry);
+    }
+
+    /**
+     * Tomcat metrics uses a delayed register mechanism, if a bean is not yet present.
+     * For this, a notificationListener is added to the mbeanServer until the bean comes up.
+     * Unfortunately, this listener got stuck after a redeploy, which prevents the GC to
+     * collect the classes from the old context. To avoid this, remove all listeners on
+     * context shutdonw.
+     */
+    public void destroy() {
+        synchronized (registeredListeners) {
+            registeredListeners.forEach(this::removeNotificationListener);
+            registeredListeners.clear();
+        }
     }
 
     private void registerSessionMetrics(MeterRegistry registry) {
@@ -242,10 +259,10 @@ public class TomcatMetrics implements MeterBinder {
                 MBeanServerNotification mBeanServerNotification = (MBeanServerNotification) notification;
                 ObjectName objectName = mBeanServerNotification.getMBeanName();
                 perObject.accept(objectName, Tags.concat(tags, nameTag(objectName)));
-                try {
-                    mBeanServer.removeNotificationListener(MBeanServerDelegate.DELEGATE_NAME, this);
-                } catch (InstanceNotFoundException | ListenerNotFoundException ex) {
-                    throw new RuntimeException(ex);
+                synchronized (registeredListeners) {
+                    if (registeredListeners.remove(this)) {
+                        removeNotificationListener(this);
+                    }
                 }
             }
         };
@@ -261,10 +278,19 @@ public class TomcatMetrics implements MeterBinder {
         };
 
         try {
+            registeredListeners.add(notificationListener);
             mBeanServer.addNotificationListener(MBeanServerDelegate.DELEGATE_NAME, notificationListener, notificationFilter, null);
         } catch (InstanceNotFoundException e) {
             // should never happen
             throw new RuntimeException("Error registering MBean listener", e);
+        }
+    }
+    
+    private void removeNotificationListener(NotificationListener listener) {
+        try {
+            mBeanServer.removeNotificationListener(MBeanServerDelegate.DELEGATE_NAME, listener);
+        } catch (InstanceNotFoundException | ListenerNotFoundException ex) {
+            throw new RuntimeException(ex);
         }
     }
 
